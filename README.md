@@ -83,3 +83,12 @@ git push
 Use the same flow for `frontend` or `cli`. The component push advances its
 branch; the superproject commit records the new pinned commit. The generated
 `bundle/` branch is updated by `node scripts/build-bundle.mjs`, not by hand.
+
+## Generate a release bundle
+
+From `main`, run `node scripts/build-bundle.mjs` to update source submodules,
+build the Angular app, and assemble the generated `bundle/` submodule. The
+script commits changed bundle output and submodule pointers; a second run with
+no source changes reports `unchanged`. Use `node scripts/build-bundle.mjs
+--push` to push the bundle branch and `main`. The bundle serves the API and
+redirects together with the built web app on port `3000`.
