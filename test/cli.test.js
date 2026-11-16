@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -65,68 +65,90 @@ after(async () => {
 });
 
 function runCli(args, env = {}) {
-  return spawnSync(process.execPath, [cliPath, ...args], {
-    encoding: 'utf8',
-    env: { ...process.env, SNIP_API: apiBase, ...env },
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      env: { ...process.env, SNIP_API: apiBase, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
   });
 }
 
-test('help prints usage without an API request', () => {
-  const result = runCli(['help']);
+async function waitForFile(filePath) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try {
+      await fs.promises.access(filePath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+test('help prints usage without an API request', async () => {
+  const result = await runCli(['help']);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /snip add <url>/);
 });
 
-test('invalid add input fails before making an API request', () => {
-  const result = runCli(['add', 'file:///etc/passwd']);
+test('invalid add input fails before making an API request', async () => {
+  const result = await runCli(['add', 'file:///etc/passwd']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /HTTP\(S\) URL/);
 });
 
-test('add posts a URL and prints the returned short link', () => {
-  const result = runCli(['add', 'https://example.com/page']);
+test('add posts a URL and prints the returned short link', async () => {
+  const result = await runCli(['add', 'https://example.com/page']);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'http://localhost:3000/abc123');
 });
 
-test('ls prints the empty state and aligned link rows', () => {
+test('ls prints the empty state and aligned link rows', async () => {
   links = [];
-  assert.equal(runCli(['ls']).stdout.trim(), 'No links yet.');
+  assert.equal((await runCli(['ls'])).stdout.trim(), 'No links yet.');
 
   links = [
     { code: 'abc123', url: 'https://example.com', hits: 2 },
     { code: 'xy9876', url: 'https://example.org', hits: 12 },
   ];
-  const result = runCli(['ls']);
+  const result = await runCli(['ls']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /CODE\s+HITS\s+URL/);
   assert.match(result.stdout, /abc123\s+2\s+https:\/\/example\.com/);
   assert.match(result.stdout, /xy9876\s+12\s+https:\/\/example\.org/);
 });
 
-test('API errors are printed to stderr with exit code 1', () => {
-  const result = runCli(['open', 'bad999']);
+test('API errors are printed to stderr with exit code 1', async () => {
+  const result = await runCli(['open', 'bad999']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Link not found/);
 });
 
-test('open requests redirects manually and launches the Location URL', { skip: process.platform === 'win32' }, () => {
+test('open requests redirects manually and launches the Location URL', { skip: process.platform === 'win32' }, async () => {
   const executable = process.platform === 'darwin' ? 'open' : 'xdg-open';
   const browserPath = path.join(tempDir, executable);
   const destinationPath = path.join(tempDir, 'destination');
   fs.writeFileSync(browserPath, `#!/bin/sh\nprintf '%s' "$1" > "${destinationPath}"\n`);
   fs.chmodSync(browserPath, 0o755);
 
-  const result = runCli(['open', 'abc123'], {
+  const result = await runCli(['open', 'abc123'], {
     PATH: `${tempDir}${path.delimiter}${process.env.PATH || ''}`,
   });
   assert.equal(result.status, 0, result.stderr);
+  await waitForFile(destinationPath);
   assert.equal(fs.readFileSync(destinationPath, 'utf8'), 'https://example.com/path');
   assert.match(result.stdout, /Opened https:\/\/example\.com\/path/);
 });
 
-test('unreachable backend fails cleanly', () => {
-  const result = runCli(['ls'], { SNIP_API: 'http://127.0.0.1:1' });
+test('unreachable backend fails cleanly', async () => {
+  const result = await runCli(['ls'], { SNIP_API: 'http://127.0.0.1:1' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Could not reach the Snip API/);
 });
